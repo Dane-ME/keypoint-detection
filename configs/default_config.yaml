@@ -1,0 +1,65 @@
+paths:
+  default_config: 'D:/AI/Keypoint_model/keypoint-detection/configs/default_config.yaml'
+  data_dir: 'D:/AI/Keypoint_model/keypoint-detection/minidatasets'
+  output_dir: 'D:/AI/Keypoint_model/keypoint-detection/outputs/training'
+
+model:
+  backbone:
+    width_mult: 1.0
+    in_channels: 3
+    out_channels: 128
+    input_size: 224  
+    convert_to_grayscale: true
+  
+  person_head:
+    in_channels: 128
+    num_classes: 1
+    conf_threshold: 0.3
+    nms_iou_threshold: 0.3
+    anchor_sizes: [32, 64, 128]
+  
+  keypoint_head:
+    in_channels: 128
+    num_keypoints: 17
+    height: 56
+    width: 56
+    fine_branch_channels: 64
+    regression_channels: 32
+    visibility_channels: 32
+    dropout_rate: 0.2
+
+training:
+  num_epochs: 50  # Tăng lên từ 1
+  batch_size: 64  # Tăng lên từ 4
+  num_workers: 2
+  
+  optimizer:
+    name: "adam" # hoặc "sgd"
+    learning_rate: 0.001
+    weight_decay: 0.0003  
+    momentum: 0.9 # cho SGD
+    beta1: 0.9 # cho Adam
+    beta2: 0.999 # cho Adam
+  
+  augmentation:
+    enabled: false  # Disable all augmentations
+    prob: 0.0
+    flip:
+      enabled: false
+      horizontal: false
+    rotate:
+      enabled: false
+      max_angle: 0.0
+    scale:
+      enabled: false
+      range: [1.0, 1.0]
+  
+  loss:
+    keypoint_loss_weight: 15.0
+    visibility_loss_weight: 5.0
+    focal_gamma: 2.5
+    focal_alpha: 0.25
+    learnable_focal_params: true
+    label_smoothing: 0.05
+
+

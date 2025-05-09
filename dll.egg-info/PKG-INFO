@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Name: dll
+Version: 1.0.0
+Requires-Dist: torch
+Requires-Dist: pyyaml
+Requires-Dist: tqdm
+Requires-Dist: pillow
+Requires-Dist: numpy
+Requires-Dist: torchvision
+Requires-Dist: opencv-python
+Requires-Dist: torchaudio

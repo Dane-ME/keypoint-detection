@@ -1,0 +1,8 @@
+python scripts/train.py --config configs/default_config.yaml --data_dir "C:/Users/pc/Desktop/project_root-20250322T120048Z-001/dataset10k/dataset10k" --output_dir outputs
+
+python scripts/predict.py --config configs/default_config.yaml --model outputs/best_model.pth --input "000000573065.jpg" --gt "000000573065.txt" --output outputs/predictions
+
+
+// Visualize Backbone Outputs
+python -m dll.visualization.backbone_vis --image 000000581921.jpg --save_dir outputs/visualizations
+python -m dll.visualization.backbone_vis --image 000000581921.jpg --label 000000581921.txt --bbox_idx 0 --save_dir outputs/visualizations
