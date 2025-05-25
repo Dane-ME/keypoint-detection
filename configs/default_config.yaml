@@ -6,18 +6,18 @@ paths:
 model:
   backbone:
     width_mult: 1.0
-    in_channels: 3
+    in_channels: 1
     out_channels: 128
-    input_size: 224  
+    input_size: 224
     convert_to_grayscale: true
-  
+
   person_head:
     in_channels: 128
     num_classes: 1
     conf_threshold: 0.3
     nms_iou_threshold: 0.3
     anchor_sizes: [32, 64, 128]
-  
+
   keypoint_head:
     in_channels: 128
     num_keypoints: 17
@@ -28,32 +28,48 @@ model:
     visibility_channels: 32
     dropout_rate: 0.2
 
+  heatmap_head:
+    in_channels: 64
+    hidden_channels: 64
+    num_keypoints: 17
+    heatmap_size: [56, 56]  # Match dataloader heatmap size
+    dropout_rate: 0.1
+    use_attention: true
+    num_deconv_layers: 2
+    deconv_kernel_sizes: [4, 4]
+    deconv_channels: [256, 256]
+
 training:
-  num_epochs: 50  # Tăng lên từ 1
-  batch_size: 64  # Tăng lên từ 4
+  num_epochs: 1  # Increase for better training
+  batch_size: 16   # Reduce for stability
   num_workers: 2
-  
+  save_interval: 10
+  validation_interval: 1
+  early_stopping_patience: 10
+  gradient_clip_norm: 1.0
+  pck_thresholds: [0.002, 0.05, 0.2]
+
   optimizer:
     name: "adam" # hoặc "sgd"
     learning_rate: 0.001
-    weight_decay: 0.0003  
+    weight_decay: 0.003
     momentum: 0.9 # cho SGD
     beta1: 0.9 # cho Adam
     beta2: 0.999 # cho Adam
-  
+
   augmentation:
-    enabled: false  # Disable all augmentations
-    prob: 0.0
+    enabled: false   # Enable augmentations for better generalization
+    prob: 0.5
     flip:
-      enabled: false
-      horizontal: false
+      enabled: true
+      horizontal: true
     rotate:
-      enabled: false
-      max_angle: 0.0
+      enabled: true
+      max_angle: 15.0
     scale:
-      enabled: false
-      range: [1.0, 1.0]
-  
+      enabled: true
+      range: [0.8, 1.2]
+
   loss:
     keypoint_loss_weight: 15.0
     visibility_loss_weight: 5.0

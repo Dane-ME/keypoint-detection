@@ -1,0 +1,97 @@
+2025-05-23 17:34:16,771 - === Starting Training Pipeline ===
+2025-05-23 17:34:17,017 - An error occurred: KeypointLoss.__init__() missing 1 required positional argument: 'device'
+2025-05-23 17:34:41,777 - === Starting Training Pipeline ===
+2025-05-23 17:34:41,987 - An error occurred: KeypointLoss.__init__() missing 1 required positional argument: 'device'
+2025-05-23 17:42:53,174 - === Starting Training Pipeline ===
+2025-05-23 17:42:53,393 - An error occurred: KeypointLoss._init_keypoint_weights() missing 1 required positional argument: 'num_keypoints'
+2025-05-23 17:44:09,237 - === Starting Training Pipeline ===
+2025-05-23 17:44:09,457 - An error occurred: ReduceLROnPlateau.__init__() got an unexpected keyword argument 'verbose'
+2025-05-23 17:45:13,973 - === Starting Training Pipeline ===
+2025-05-23 17:45:14,199 - === Starting Training Pipeline ===
+2025-05-23 17:45:14,199 - 
+Epoch 1/50
+2025-05-23 17:45:19,607 - An error occurred: float division by zero
+2025-05-23 17:47:17,197 - === Starting Training Pipeline ===
+2025-05-23 17:47:17,434 - === Starting Training Pipeline ===
+2025-05-23 17:47:17,434 - 
+Epoch 1/50
+2025-05-23 17:47:21,784 - An error occurred: Caught ValueError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "d:\ai\keypoint_model\keypoint-detection\dll\data\dataloader.py", line 158, in __getitem__
+    gt_heatmaps = generate_target_heatmap(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "d:\ai\keypoint_model\keypoint-detection\dll\models\heatmap_head.py", line 167, in generate_target_heatmap
+    batch_size, num_keypoints, _ = keypoints.shape
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: too many values to unpack (expected 3)
+
+2025-05-23 17:48:03,340 - === Starting Training Pipeline ===
+2025-05-23 17:48:03,561 - === Starting Training Pipeline ===
+2025-05-23 17:48:03,563 - 
+Epoch 1/50
+2025-05-23 17:48:07,696 - An error occurred: Caught ValueError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "d:\ai\keypoint_model\keypoint-detection\dll\data\dataloader.py", line 158, in __getitem__
+    gt_heatmaps = generate_target_heatmap(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "d:\ai\keypoint_model\keypoint-detection\dll\models\heatmap_head.py", line 167, in generate_target_heatmap
+    batch_size, num_keypoints= keypoints.shape
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: too many values to unpack (expected 2)
+
+2025-05-23 17:50:18,853 - === Starting Training Pipeline ===
+2025-05-23 17:50:19,072 - === Starting Training Pipeline ===
+2025-05-23 17:50:19,072 - 
+Epoch 1/50
+2025-05-23 17:50:24,235 - An error occurred: DataLoader worker (pid(s) 24976, 14680) exited unexpectedly
+2025-05-23 17:53:40,842 - === Starting Training Pipeline ===
+2025-05-23 17:53:41,084 - === Starting Training Pipeline ===
+2025-05-23 17:53:41,084 - 
+Epoch 1/50
+2025-05-23 17:53:45,740 - An error occurred: Given groups=1, weight of size [16, 3, 3, 3], expected input[2, 1, 224, 224] to have 3 channels, but got 1 channels instead
+2025-05-23 17:56:37,620 - === Starting Training Pipeline ===
+2025-05-23 17:56:37,867 - === Starting Training Pipeline ===
+2025-05-23 17:56:37,867 - 
+Epoch 1/50
+2025-05-23 17:56:41,948 - An error occurred: Caught RuntimeError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 55, in fetch
+    return self.collate_fn(data)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "d:\ai\keypoint_model\keypoint-detection\dll\data\dataloader.py", line 229, in custom_collate_fn
+    batch_visibilities = torch.stack(batch_visibilities)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: stack expects each tensor to be equal size, but got [2, 17] at entry 0 and [1, 17] at entry 1
+
+2025-05-23 17:58:14,442 - === Starting Training Pipeline ===
+2025-05-23 17:58:14,653 - === Starting Training Pipeline ===
+2025-05-23 17:58:14,653 - 
+Epoch 1/50
+2025-05-23 17:58:18,818 - An error occurred: Caught RuntimeError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 55, in fetch
+    return self.collate_fn(data)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "d:\ai\keypoint_model\keypoint-detection\dll\data\dataloader.py", line 233, in custom_collate_fn
+    batch_visibilities = torch.stack(batch_visibilities)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: stack expects each tensor to be equal size, but got [2, 17] at entry 0 and [1, 17] at entry 1
+

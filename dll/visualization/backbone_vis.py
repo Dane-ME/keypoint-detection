@@ -17,7 +17,7 @@ from dll.configs.model_config import BackboneConfig
 # Lớp wrapper cho MobileNetV3 để có cùng interface với BACKBONE
 class MobileNetV3Wrapper0(nn.Module):
     def __init__(self, config: BackboneConfig):
-        super(MobileNetV3Wrapper, self).__init__()
+        super(MobileNetV3Wrapper0, self).__init__()
         # Tải MobileNetV3 với weights pretrained
         weights = MobileNet_V3_Small_Weights.DEFAULT
         self.model = mobilenet_v3_small(weights=weights)

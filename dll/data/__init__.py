@@ -1,8 +1,8 @@
-from .dataloader import create_dataloader, KeypointsDataset
+from .dataloader import create_optimized_dataloader, OptimizedKeypointsDataset
 from .transforms import ITransform
 
 __all__ = [
-    'create_dataloader',
-    'KeypointsDataset',
+    'create_optimized_dataloader',
+    'OptimizedKeypointsDataset',
     'ITransform'
 ]

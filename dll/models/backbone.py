@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
 from dll.configs.model_config import BackboneConfig
+from torchvision.models.feature_extraction import create_feature_extractor
 
 class LightweightFPN(nn.Module):
     def __init__(self, in_channels_list, out_channels):
@@ -11,18 +12,11 @@ class LightweightFPN(nn.Module):
         if not isinstance(in_channels_list, list):
             raise ValueError("in_channels_list must be a list of input channel sizes")
         
-        # Lateral convolutions to reduce channel dimensions
         self.lateral_convs = nn.ModuleList([
             nn.Conv2d(in_ch, out_channels, kernel_size=1, stride=1, bias=False) 
             for in_ch in in_channels_list
         ])
         
-        # Batch normalization for lateral convolutions
-        self.lateral_norms = nn.ModuleList([
-            nn.BatchNorm2d(out_channels) for _ in in_channels_list
-        ])
-        
-        # FPN convolutions to refine the features
         self.fpn_convs = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(out_channels, out_channels, kernel_size=3, 
@@ -33,28 +27,16 @@ class LightweightFPN(nn.Module):
         ])
 
     def forward(self, features):
-        # Validate input features
         if len(features) != len(self.lateral_convs):
             raise ValueError(f"Expected {len(self.lateral_convs)} features, got {len(features)}")
         
-        # Apply lateral convolutions and normalization
-        laterals = [norm(lateral_conv(f)) 
-                    for lateral_conv, norm, f in zip(self.lateral_convs, self.lateral_norms, features)]
+        laterals = [lateral_conv(f) for lateral_conv, f in zip(self.lateral_convs, features)]
         
-        # Top-down pathway
-        fpn_outs = [laterals[-1]]  # Start with the top layer
-        for i in range(len(features) - 2, -1, -1):
-            up = nn.functional.interpolate(
-                fpn_outs[-1], 
-                size=laterals[i].shape[2:], 
-                mode='nearest'
-            )
-            fpn_outs.append(laterals[i] + up)
-        
-        # Apply 3x3 convolutions to refine the features
-        fpn_outs = [fpn_conv(out) for fpn_conv, out in zip(self.fpn_convs, fpn_outs[::-1])]
-        
-        return fpn_outs
+        for i in range(len(laterals)-1, 0, -1):  
+            upsampled = nn.functional.interpolate(laterals[i], size=laterals[i-1].shape[2:], mode='nearest')
+            laterals[i-1] += upsampled
+                
+        return [fpn_conv(f) for fpn_conv, f in zip(self.fpn_convs, laterals)]
 
 class SEModule(nn.Module):
     """Squeeze-and-Excitation Module"""
@@ -261,47 +243,25 @@ class BACKBONE(nn.Module):
         fpn_outputs[0] = self.limb_attention(fpn_outputs[0])
         
         return fpn_outputs
-# Lớp wrapper cho MobileNetV3 để có cùng interface với BACKBONE
+
 class MobileNetV3Wrapper(nn.Module):
-    def __init__(self, config: BackboneConfig):
+    def __init__(self, config: BackboneConfig, out_channels=128, attention_module=None):   
         super(MobileNetV3Wrapper, self).__init__()
-        # Tải MobileNetV3 với weights pretrained
-        weights = MobileNet_V3_Small_Weights.DEFAULT
-        self.model = mobilenet_v3_small(weights=weights)
-        
-        # Điều chỉnh lớp đầu vào nếu cần
+        model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
         if config.in_channels != 3:
-            self.model.features[0][0] = nn.Conv2d(
-                config.in_channels, 16, kernel_size=3, stride=2, padding=1, bias=False
-            )
-        
-        # Layers để trích xuất features
-        self.selected_layers = [0, 3, 8, 12]  # Tương ứng với các stage của MobileNetV3
-        self.backbone_outputs = []
-        
-        # FPN layers
-        self.fpn = nn.ModuleList([
-            nn.Conv2d(16, config.out_channels, kernel_size=1),  # Layer 0
-            nn.Conv2d(24, config.out_channels, kernel_size=1),  # Layer 3
-            nn.Conv2d(48, config.out_channels, kernel_size=1),  # Layer 8
-            nn.Conv2d(576, config.out_channels, kernel_size=1)  # Layer 12
-        ])
-        
+            model.features[0][0] = nn.Conv2d(config.in_channels, 16, kernel_size=3, stride=2, padding=1, bias=False)
+        return_nodes = {'features.0': 'feat0', 'features.3': 'feat1', 'features.8': 'feat2', 'features.12': 'feat3'}
+        self.body = create_feature_extractor(model, return_nodes=return_nodes)        
+        self.fpn = LightweightFPN([16, 24, 48, 576], out_channels)
+        self.attention_module = attention_module
+                
     def forward(self, x):
-        self.backbone_outputs = []
-        
-        # Trích xuất features từ các layer trung gian
-        for i, layer in enumerate(self.model.features):
-            x = layer(x)
-            if i in self.selected_layers:
-                self.backbone_outputs.append(x)
-        
-        # Áp dụng FPN
-        fpn_outputs = []
-        for i, feature in enumerate(self.backbone_outputs):
-            fpn_outputs.append(self.fpn[i](feature))
-            
-        return fpn_outputs
+        feats = self.body(x)
+        features = [feats['feat0'], feats['feat1'], feats['feat2'], feats['feat3']]  
+        fpn_outs = self.fpn(features) 
+        if self.attention_module:  
+            fpn_outs[0] = self.attention_module(fpn_outs[0])
+        return fpn_outs
 
 def main():
     """Test backbone model"""
