@@ -137,7 +137,7 @@ class KeypointLoss(nn.Module):
             weights = self.keypoint_weights.view(1, -1).expand(batch_size, -1)
 
         # Use simple MSE loss to avoid memory issues temporarily
-        heatmap_loss = torch.nn.functional.mse_loss(pred_heatmaps, gt_heatmaps)
+        heatmap_loss =  self.heatmap_criterion(pred_heatmaps, gt_heatmaps, weights)
 
         # Temporarily disable visibility loss to debug memory issue
         visibility_loss = torch.tensor(0.0, device=pred_heatmaps.device)
