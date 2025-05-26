@@ -163,8 +163,18 @@ def get_gaussian_kernel(size: int = 7, sigma: float = 3) -> torch.Tensor:
 def generate_target_heatmap(
         keypoints: torch.Tensor,
         heatmap_size: Tuple[int, int],
-        sigma: float = 2.0) -> torch.Tensor:
-    """    Vectorized version: Faster, more readable.    """
+        sigma: float = 3.0) -> torch.Tensor:
+    """
+    Generate target heatmaps with improved Gaussian generation.
+
+    Args:
+        keypoints: Keypoint coordinates
+        heatmap_size: Size of output heatmap (H, W)
+        sigma: Gaussian sigma (increased from 2.0 to 3.0 for better learning)
+
+    Returns:
+        Generated heatmaps
+    """
     if len(keypoints.shape) == 4:  # Shape is (B, P, K, 2)
         batch_size, num_persons, num_keypoints, _ = keypoints.shape
         # Flatten the person dimension into the batch dimension
@@ -212,10 +222,41 @@ def generate_target_heatmap(
                 kernel_y_min:kernel_y_max, kernel_x_min:kernel_x_max
             ]
     return heatmaps
+
+def generate_target_heatmap_adaptive(
+        keypoints: torch.Tensor,
+        heatmap_size: Tuple[int, int],
+        base_sigma: float = 3.0,
+        adaptive: bool = True) -> torch.Tensor:
+    """
+    Generate target heatmaps with adaptive sigma based on heatmap size.
+
+    Args:
+        keypoints: Keypoint coordinates
+        heatmap_size: Size of output heatmap (H, W)
+        base_sigma: Base sigma value
+        adaptive: Whether to use adaptive sigma based on heatmap size
+
+    Returns:
+        Generated heatmaps with adaptive Gaussian kernels
+    """
+    if adaptive:
+        # Adaptive sigma based on heatmap size
+        # Larger heatmaps get larger sigma for consistent relative coverage
+        height, width = heatmap_size
+        scale_factor = min(height, width) / 56.0  # Normalize to 56x56 baseline
+        sigma = base_sigma * max(0.8, scale_factor)  # Minimum sigma of 0.8 * base_sigma
+    else:
+        sigma = base_sigma
+
+    return generate_target_heatmap(keypoints, heatmap_size, sigma)
+
 def _ensure_batch(heatmaps: torch.Tensor) -> Tuple[torch.Tensor, bool]:
     if heatmaps.dim() == 3:
         heatmaps = heatmaps.unsqueeze(0)
         was_3d = True
+    else:
+        was_3d = False
     return heatmaps, was_3d
 
 def _remove_batch(tensor: torch.Tensor, was_3d: bool) -> torch.Tensor:
@@ -327,6 +368,49 @@ def decode_heatmaps_subpixel(heatmaps: torch.Tensor, window_size: int = 3) -> Tu
         refined_scores = refined_scores.squeeze(0)
 
     return keypoints, refined_scores
+
+def decode_heatmaps_soft_argmax(heatmaps: torch.Tensor, temperature: float = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Decode heatmaps using soft-argmax (integral regression) for better accuracy.
+
+    Args:
+        heatmaps: Tensor of shape (B, K, H, W) or (K, H, W)
+        temperature: Temperature for softmax (lower = more peaked)
+
+    Returns:
+        keypoints: Tensor of shape (B, K, 2) or (K, 2) with normalized coordinates
+        scores: Tensor of shape (B, K) or (K,) with confidence scores
+    """
+    heatmaps, was_3d = _ensure_batch(heatmaps)
+
+    batch_size, num_keypoints, height, width = heatmaps.shape
+
+    # Apply temperature scaling and softmax
+    heatmaps_scaled = heatmaps / temperature
+    heatmaps_flat = heatmaps_scaled.reshape(batch_size, num_keypoints, -1)
+    heatmaps_softmax = F.softmax(heatmaps_flat, dim=2)
+    heatmaps_softmax = heatmaps_softmax.reshape(batch_size, num_keypoints, height, width)
+
+    # Create coordinate grids
+    device = heatmaps.device
+    y_coords = torch.arange(height, device=device, dtype=torch.float32).view(1, 1, height, 1)
+    x_coords = torch.arange(width, device=device, dtype=torch.float32).view(1, 1, 1, width)
+
+    # Compute expected coordinates (soft-argmax)
+    expected_y = (heatmaps_softmax * y_coords).sum(dim=(2, 3))  # [B, K]
+    expected_x = (heatmaps_softmax * x_coords).sum(dim=(2, 3))  # [B, K]
+
+    # Normalize to [0, 1]
+    keypoints_x = expected_x / (width - 1)
+    keypoints_y = expected_y / (height - 1)
+
+    # Stack coordinates
+    keypoints = torch.stack([keypoints_x, keypoints_y], dim=-1)
+
+    # Compute confidence scores as maximum values
+    scores = heatmaps.reshape(batch_size, num_keypoints, -1).max(dim=2)[0]
+
+    return _remove_batch(keypoints, was_3d), _remove_batch(scores, was_3d)
 
 def visualize_heatmap_results(image: torch.Tensor,
                             heatmaps: torch.Tensor,

@@ -17,6 +17,7 @@ dll/data/dataloader.py
 dll/data/transforms.py
 dll/losses/__init__.py
 dll/losses/keypoint_loss.py
+dll/losses/keypoint_loss_v2.py
 dll/models/__init__.py
 dll/models/backbone.py
 dll/models/heatmap_head.py
@@ -26,5 +27,6 @@ dll/models/person_head.py
 dll/training/__init__.py
 dll/training/trainer.py
 dll/utils/__init__.py
+dll/utils/device_manager.py
 dll/utils/logger.py
 dll/utils/metric.py

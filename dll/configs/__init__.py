@@ -1,6 +1,6 @@
-from .base_config import BaseConfig
+from .base_config import BaseConfig, DeviceConfig
 from .model_config import (
-    ModelConfig, 
+    ModelConfig,
     BackboneConfig,
     PersonDetectionConfig,
     KeypointHeadConfig,
@@ -15,6 +15,7 @@ from .training_config import (
 
 __all__ = [
     'BaseConfig',
+    'DeviceConfig',
     'ModelConfig',
     'BackboneConfig',
     'PersonDetectionConfig',

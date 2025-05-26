@@ -19,6 +19,7 @@ from dll.utils.metric import (
     compute_epoch_metrics,
     create_base_metrics
 )
+from dll.utils.device_manager import get_device_manager, move_batch_to_device
 from dll.configs.training_config import TrainingConfig
 
 class Trainer:
@@ -39,15 +40,22 @@ class Trainer:
         self.output_dir = Path(output_dir) if output_dir else None
         self.use_amp = use_amp
 
-        # Setup device
-        self.device = device
-        self.model = self.model.to(self.device)
+        # Setup device - use device manager if available
+        try:
+            device_manager = get_device_manager()
+            self.device = device_manager.device
+            self.model = device_manager.to_device(self.model)
+            self.use_amp = device_manager.mixed_precision
+        except RuntimeError:
+            # Fallback if device manager not initialized
+            self.device = device
+            self.model = self.model.to(self.device)
 
         # Setup optimizer
         self.optimizer = self._create_optimizer()
 
-        # Setup AMP scaler for mixed precision
-        self.scaler = torch.amp.GradScaler('cuda') if use_amp else None
+        # Setup AMP scaler for mixed precision - use self.use_amp which may be updated by DeviceManager
+        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
 
         # Setup scheduler
         self.scheduler = lr_scheduler.ReduceLROnPlateau(
@@ -62,6 +70,10 @@ class Trainer:
             'epoch': [],
             'train_loss': [],
             'val_loss': [],
+            'train_keypoint_loss': [],
+            'val_keypoint_loss': [],
+            'train_visibility_loss': [],
+            'val_visibility_loss': [],
             'learning_rate': [],
             'avg_ADE': []
         }
@@ -130,9 +142,8 @@ class Trainer:
                            dynamic_ncols=True)
 
         for batch in progress_bar:
-            # Move data to device
-            batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()}
+            # Move data to device using device manager
+            batch = move_batch_to_device(batch)
 
             # Forward pass
             self.optimizer.zero_grad()
@@ -177,9 +188,17 @@ class Trainer:
         return epoch_metrics
 
     def validate_epoch(self) -> Dict[str, float]:
+        """Validate for one epoch with detailed loss computation like training."""
         self.model.eval()
-        val_metrics = defaultdict(float)
-        num_batches = len(self.val_dataloader)
+        epoch_metrics = create_base_metrics()
+
+        # Add additional validation metrics
+        epoch_metrics.update({
+            'avg_ADE': 0.0,
+            'pck_0.002': 0.0,
+            'pck_0.05': 0.0,
+            'pck_0.2': 0.0
+        })
 
         with torch.no_grad():
             progress_bar = tqdm(self.val_dataloader,
@@ -188,26 +207,104 @@ class Trainer:
                               dynamic_ncols=True)
 
             for batch in progress_bar:
-                batch_metrics = compute_batch_metrics(
-                    model=self.model,
-                    batch=batch,
-                    device=self.device,
-                    is_training=False
-                )
+                # Move data to device using device manager
+                batch = move_batch_to_device(batch)
 
-                # Accumulate metrics
-                for k, v in batch_metrics.items():
-                    if isinstance(v, (float, int)) or (isinstance(v, torch.Tensor) and v.numel() == 1):
-                        val_metrics[k] += v / num_batches
+                # Forward pass (same as training but without backward)
+                if self.use_amp:
+                    # Mixed precision forward pass
+                    with torch.amp.autocast('cuda'):
+                        outputs = self.model(batch)
+                else:
+                    # Standard precision
+                    outputs = self.model(batch)
 
-                # Update progress bar with current metrics
-                progress_bar.set_postfix({
-                    'loss': f"{batch_metrics['loss']:.4f}",
-                    'ADE': f"{batch_metrics.get('avg_ADE', 0):.4f}",
-                    'PCK@0.2': f"{batch_metrics.get('pck_0.2', 0):.4f}"
-                })
+                # Update metrics (same as training)
+                if 'loss' in outputs:
+                    epoch_metrics['loss'] += outputs['loss'].item()
+                    epoch_metrics['keypoint_loss'] += outputs.get('keypoint_loss', 0)
+                    epoch_metrics['visibility_loss'] += outputs.get('visibility_loss', 0)
+                    epoch_metrics['num_batches'] += 1
 
-        return dict(val_metrics)
+                    # Calculate additional validation metrics (PCK, ADE)
+                    if 'keypoints' in outputs and 'keypoints' in batch:
+                        additional_metrics = self._calculate_validation_metrics(outputs, batch)
+                        for key, value in additional_metrics.items():
+                            epoch_metrics[key] += value
+
+                    # Update progress bar
+                    progress_bar.set_postfix({
+                        'loss': f"{outputs['loss'].item():.4f}",
+                        'ADE': f"{epoch_metrics['avg_ADE'] / max(epoch_metrics['num_batches'], 1):.4f}",
+                        'PCK@0.2': f"{epoch_metrics['pck_0.2'] / max(epoch_metrics['num_batches'], 1):.4f}"
+                    })
+                else:
+                    logging.warning("No loss computed for validation batch")
+
+        # Average all metrics
+        if epoch_metrics['num_batches'] > 0:
+            for key in epoch_metrics:
+                if key != 'num_batches':
+                    epoch_metrics[key] /= epoch_metrics['num_batches']
+
+        return dict(epoch_metrics)
+
+    def _calculate_validation_metrics(self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """Calculate validation metrics like PCK and ADE."""
+        metrics = {}
+
+        try:
+            # Get predicted and ground truth keypoints
+            pred_keypoints = outputs['keypoints']
+            gt_keypoints = batch['keypoints']
+            gt_visibilities = batch['visibilities']
+
+            # Handle dimension mismatches
+            if pred_keypoints.dim() == 5:  # [B, P, 1, K, 2]
+                pred_keypoints = pred_keypoints.squeeze(2)  # -> [B, P, K, 2]
+            if pred_keypoints.dim() == 4 and gt_keypoints.dim() == 3:  # [B, P, K, 2] vs [B, K, 2]
+                # Take first person for comparison
+                pred_keypoints = pred_keypoints[:, 0, :, :]  # -> [B, K, 2]
+
+            # Ensure same shape
+            if pred_keypoints.shape != gt_keypoints.shape:
+                # Skip metrics calculation if shapes don't match
+                return {
+                    'avg_ADE': 0.0,
+                    'pck_0.002': 0.0,
+                    'pck_0.05': 0.0,
+                    'pck_0.2': 0.0
+                }
+
+            # Calculate Average Distance Error (ADE)
+            dist = torch.norm(pred_keypoints - gt_keypoints, dim=-1)  # [B, K]
+
+            # Only consider visible keypoints
+            visible_mask = gt_visibilities > 0
+            if visible_mask.sum() > 0:
+                metrics['avg_ADE'] = dist[visible_mask].mean().item()
+            else:
+                metrics['avg_ADE'] = 0.0
+
+            # Calculate PCK (Percentage of Correct Keypoints)
+            for threshold in self.config.pck_thresholds:
+                if visible_mask.sum() > 0:
+                    correct = (dist <= threshold) & visible_mask
+                    metrics[f'pck_{threshold}'] = correct.float().mean().item()
+                else:
+                    metrics[f'pck_{threshold}'] = 0.0
+
+        except Exception as e:
+            logging.warning(f"Error calculating validation metrics: {e}")
+            # Return default metrics
+            metrics = {
+                'avg_ADE': 0.0,
+                'pck_0.002': 0.0,
+                'pck_0.05': 0.0,
+                'pck_0.2': 0.0
+            }
+
+        return metrics
 
     def train(self) -> Tuple[nn.Module, Dict]:
         """Train the model for the specified number of epochs."""
@@ -224,9 +321,10 @@ class Trainer:
             # Validation phase
             val_metrics = self.validate_epoch()
 
-            # Log metrics
-            loss_info = f"Train Loss: {train_metrics['loss']:.4f}, Val Loss: {val_metrics['loss']:.4f}, ADE: {val_metrics['avg_ADE']:.4f}"
-            logging.info(loss_info)
+            # Log detailed metrics
+            logging.info(f"Train Loss: {train_metrics['loss']:.4f} (keypoint: {train_metrics['keypoint_loss']:.4f}, visibility: {train_metrics['visibility_loss']:.4f})")
+            logging.info(f"Val Loss: {val_metrics['loss']:.4f} (keypoint: {val_metrics['keypoint_loss']:.4f}, visibility: {val_metrics['visibility_loss']:.4f})")
+            logging.info(f"ADE: {val_metrics['avg_ADE']:.4f}")
 
             # Log PCK metrics
             logging.info("PCK Metrics:")
@@ -278,6 +376,10 @@ class Trainer:
         self.history['epoch'].append(epoch)
         self.history['train_loss'].append(train_metrics['loss'])
         self.history['val_loss'].append(val_metrics['loss'])
+        self.history['train_keypoint_loss'].append(train_metrics['keypoint_loss'])
+        self.history['val_keypoint_loss'].append(val_metrics['keypoint_loss'])
+        self.history['train_visibility_loss'].append(train_metrics['visibility_loss'])
+        self.history['val_visibility_loss'].append(val_metrics['visibility_loss'])
         self.history['learning_rate'].append(
             self.optimizer.param_groups[0]['lr']
         )

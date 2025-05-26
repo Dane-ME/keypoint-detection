@@ -5,7 +5,7 @@ Training configuration
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 
-from .base_config import BaseConfig
+from .base_config import BaseConfig, DeviceConfig
 
 @dataclass
 class OptimizerConfig(BaseConfig):
@@ -15,7 +15,7 @@ class OptimizerConfig(BaseConfig):
     momentum: float = 0.9  # for SGD
     beta1: float = 0.9     # for Adam
     beta2: float = 0.999   # for Adam
-    
+
     def validate(self):
         assert self.learning_rate > 0, "learning_rate must be positive"
         assert 0 <= self.momentum <= 1, "momentum must be between 0 and 1"
@@ -38,9 +38,21 @@ class AugmentationConfig(BaseConfig):
         "enabled": True,
         "range": [0.8, 1.2]
     })
-    
+
     def validate(self):
         assert 0 <= self.prob <= 1, "prob must be between 0 and 1"
+
+@dataclass
+class WeightedLossConfig(BaseConfig):
+    enabled: bool = True
+    keypoint_weight: float = 15.0
+    background_weight: float = 1.0
+    threshold: float = 0.1
+
+    def validate(self):
+        assert self.keypoint_weight >= 0, "keypoint_weight must be non-negative"
+        assert self.background_weight >= 0, "background_weight must be non-negative"
+        assert 0 <= self.threshold <= 1, "threshold must be between 0 and 1"
 
 @dataclass
 class LossConfig(BaseConfig):
@@ -50,7 +62,8 @@ class LossConfig(BaseConfig):
     focal_alpha: Optional[float] = None
     learnable_focal_params: bool = False
     label_smoothing: float = 0.05
-    
+    weighted_loss: WeightedLossConfig = field(default_factory=WeightedLossConfig)
+
     def validate(self):
         assert self.keypoint_loss_weight >= 0, "keypoint_loss_weight must be non-negative"
         assert self.visibility_loss_weight >= 0, "visibility_loss_weight must be non-negative"
@@ -58,6 +71,7 @@ class LossConfig(BaseConfig):
         if self.focal_alpha is not None:
             assert 0 <= self.focal_alpha <= 1, "focal_alpha must be between 0 and 1"
         assert 0 <= self.label_smoothing <= 1, "label_smoothing must be between 0 and 1"
+        self.weighted_loss.validate()
 
 @dataclass
 class TrainingConfig(BaseConfig):
@@ -67,23 +81,24 @@ class TrainingConfig(BaseConfig):
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     loss: LossConfig = field(default_factory=LossConfig)
+    device: DeviceConfig = field(default_factory=DeviceConfig)
     checkpoint_interval: int = 5
     validation_interval: int = 1
-    
+
     # Learning rate scheduler parameters
     lr_factor: float = 0.1  # Factor to reduce learning rate
     patience: int = 3  # Number of epochs with no improvement after which learning rate will be reduced
     min_lr: float = 1e-6  # Minimum learning rate
-    
+
     # Loss weights
     lambda_keypoint: float = 15.0
     lambda_visibility: float = 5.0
     l2_lambda: float = 0.0003
-    
+
     # Metrics
     default_validation_threshold: float = 0.5
     pck_thresholds: List[float] = field(default_factory=lambda: [0.002, 0.05, 0.2])
-    
+
     def validate(self):
         assert self.num_epochs > 0, "num_epochs must be positive"
         assert self.batch_size > 0, "batch_size must be positive"
