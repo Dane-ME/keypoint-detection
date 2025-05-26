@@ -1,12 +1,12 @@
 paths:
-  default_config: 'C:\Users\pc\Desktop\project_root-20250322T120048Z-001\project_root\keypoint-detection\configs\default_config.yaml'
-  data_dir: 'C:\Users\pc\Desktop\project_root-20250322T120048Z-001\dataset10k\dataset10k'
-  output_dir: 'C:\Users\pc\Desktop\project_root-20250322T120048Z-001\project_root\keypoint-detection\outputs'
+  default_config: 'D:/AI/Keypoint_model/keypoint-detection/configs/default_config.yaml'
+  data_dir: 'D:/AI/Keypoint_model/minidatasets'
+  output_dir: 'D:/AI/Keypoint_model/keypoint-detection/outputs'
 
 # Device configuration - centralized device management
 device:
   # Device type: 'auto', 'cuda', 'cpu', or specific device like 'cuda:0'
-  type: 'auto'  # auto will use cuda if available, otherwise cpu
+  type: 'cpu'  # auto will use cuda if available, otherwise cpu
   # Force CPU even if CUDA is available (useful for debugging)
   force_cpu: false
   # Enable mixed precision training (only works with CUDA)
