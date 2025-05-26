@@ -14,11 +14,13 @@ from dll.configs import (
     HeatmapHeadConfig,
     OptimizerConfig,
     AugmentationConfig,
-    LossConfig
+    LossConfig,
+    DeviceConfig
 )
 from dll.training import Trainer
 from dll.models import MultiPersonKeypointModel
 from dll.data import create_optimized_dataloader, OptimizedKeypointsDataset
+from dll.utils import initialize_device_manager, get_device
 
 def setup_logging(output_dir: Path):
     """Setup logging configuration."""
@@ -46,6 +48,7 @@ def get_dataloader(split, data_dir, config, model_config):
     return create_optimized_dataloader(
         dataset_dir=data_dir,
         batch_size=config.batch_size,
+        num_workers=config.num_workers,  # Use num_workers from config
         max_persons=10,
         split=split,
         img_size=model_config.backbone.input_size,
@@ -65,13 +68,18 @@ def create_configs(config_dict):
         heatmap_head=HeatmapHeadConfig(**config_dict['model']['heatmap_head']),
         num_keypoints=config_dict['model']['keypoint_head']['num_keypoints']
     )
+
+    # Create device config from config dict
+    device_config = DeviceConfig(**config_dict.get('device', {}))
+
     training_config = TrainingConfig(
         num_epochs=config_dict['training']['num_epochs'],
         batch_size=config_dict['training']['batch_size'],
         num_workers=config_dict['training']['num_workers'],
         optimizer=OptimizerConfig(**config_dict['training']['optimizer']),
         augmentation=AugmentationConfig(**config_dict['training']['augmentation']),
-        loss=LossConfig(**config_dict['training']['loss'])
+        loss=LossConfig(**config_dict['training']['loss']),
+        device=device_config
     )
     return model_config, training_config
 def train_pipeline(args):
@@ -83,11 +91,17 @@ def train_pipeline(args):
     logging.info("=== Starting Training Pipeline ===")
 
     model_config, training_config = create_configs(config_dict)
+
+    # Initialize device manager with config
+    initialize_device_manager(training_config.device)
+    logger.info(f"Device manager initialized with: {training_config.device}")
+
     model = MultiPersonKeypointModel(model_config, training_config)
 
     train_dataloader = get_dataloader('train', args.data_dir, training_config, model_config)
     val_dataloader = get_dataloader('val', args.data_dir, training_config, model_config)
 
+    # Use device from device manager instead of local function
     device = get_device()
     trainer = Trainer(
         model=model,

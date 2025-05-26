@@ -67,7 +67,7 @@ class MultiPersonKeypointModel(nn.Module):
         self.loss_fn = KeypointLoss(
             num_keypoints=config.num_keypoints,
             config=training_config,
-            device=torch.device('cpu')
+            device=torch.device('cuda')
         )
 
         self.num_keypoints = config.num_keypoints
@@ -545,6 +545,11 @@ class MultiPersonKeypointModel(nn.Module):
 
         # Prepare visibilities for loss computation
         pred_vis = outputs['visibilities']
+
+        # Handle different visibility prediction shapes
+        if pred_vis.dim() == 5:  # [B, P, 1, K, 3] - extra dimension
+            pred_vis = pred_vis.clone().squeeze(2)  # Clone before squeeze to avoid memory sharing -> [B, P, K, 3]
+
         if pred_vis.dim() == 4:  # [B, P, K, 3]
             # Aggregate across persons (max for visibility classes)
             pred_vis = torch.max(pred_vis, dim=1)[0]  # [B, K, 3]
@@ -559,12 +564,17 @@ class MultiPersonKeypointModel(nn.Module):
             # Aggregate across persons (max for visibility)
             gt_vis = torch.max(gt_vis, dim=1)[0]  # [B, K]
 
+        # Prepare keypoints for loss computation
+        pred_kpts = outputs['keypoints']
+        if pred_kpts.dim() == 5:  # [B, P, 1, K, 2] - extra dimension
+            pred_kpts = pred_kpts.clone().squeeze(2)  # Clone before squeeze to avoid memory sharing -> [B, P, K, 2]
+
         # Compute loss
         heatmap_loss, loss_dict = self.loss_fn(
             predictions={
                 'heatmaps': pred_heatmaps,
                 'visibilities': pred_vis,
-                'keypoints': outputs['keypoints']  # Add keypoints for coordinate loss
+                'keypoints': pred_kpts  # Add keypoints for coordinate loss
             },
             targets={
                 'heatmaps': heatmaps_gt,

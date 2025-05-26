@@ -1,7 +1,18 @@
 paths:
-  default_config: 'D:/AI/Keypoint_model/keypoint-detection/configs/default_config.yaml'
-  data_dir: 'D:/AI/Keypoint_model/keypoint-detection/minidatasets'
-  output_dir: 'D:/AI/Keypoint_model/keypoint-detection/outputs/training'
+  default_config: 'C:\Users\pc\Desktop\project_root-20250322T120048Z-001\project_root\keypoint-detection\configs\default_config.yaml'
+  data_dir: 'C:\Users\pc\Desktop\project_root-20250322T120048Z-001\dataset10k\dataset10k'
+  output_dir: 'C:\Users\pc\Desktop\project_root-20250322T120048Z-001\project_root\keypoint-detection\outputs'
+
+# Device configuration - centralized device management
+device:
+  # Device type: 'auto', 'cuda', 'cpu', or specific device like 'cuda:0'
+  type: 'auto'  # auto will use cuda if available, otherwise cpu
+  # Force CPU even if CUDA is available (useful for debugging)
+  force_cpu: false
+  # Enable mixed precision training (only works with CUDA)
+  mixed_precision: true
+  # Pin memory for faster data transfer (only works with CUDA)
+  pin_memory: true
 
 model:
   backbone:
@@ -40,12 +51,12 @@ model:
     deconv_channels: [256, 256]
 
 training:
-  num_epochs: 1  # Increase for better training
-  batch_size: 16   # Reduce for stability
-  num_workers: 2
+  num_epochs: 5  # Increase for better training
+  batch_size: 96   # Reduce for stability
+  num_workers: 0  # Set to 0 to avoid multiprocessing issues with DeviceManager
   save_interval: 10
   validation_interval: 1
-  early_stopping_patience: 10
+  early_stopping_patience: 6
   gradient_clip_norm: 1.0
   pck_thresholds: [0.002, 0.05, 0.2]
 
@@ -71,11 +82,17 @@ training:
       range: [0.8, 1.2]
 
   loss:
-    keypoint_loss_weight: 15.0
-    visibility_loss_weight: 5.0
+    keypoint_loss_weight: 20.0  # Increased for better keypoint learning
+    visibility_loss_weight: 8.0  # Increased for better visibility learning
     focal_gamma: 2.5
     focal_alpha: 0.25
-    learnable_focal_params: true
+    learnable_focal_params: false
     label_smoothing: 0.05
+    # New weighted loss parameters
+    weighted_loss:
+      enabled: true
+      keypoint_weight: 15.0  # Higher weight for keypoint regions
+      background_weight: 1.0  # Lower weight for background
+      threshold: 0.1  # Threshold to distinguish keypoint vs background
 
 
