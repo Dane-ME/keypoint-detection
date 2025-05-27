@@ -122,7 +122,7 @@ class OptimizedKeypointsDataset(Dataset):
         self._image_cache = LRUCache(maxsize=cache_size) if enable_caching else None
 
         # Initialize transforms
-        self.transform = transform or ITransform(img_size=img_size, clip_limit=1.5, tile_size=(8, 8))
+        self.transform = transform or ITransform(img_size=img_size, clip_limit=1.5, tile_size=(8, 8), grayscale=grayscale)
         self.augmentation = augmentation if split == "train" else None
 
         # Validate and load dataset
@@ -335,11 +335,11 @@ class OptimizedKeypointsDataset(Dataset):
         return transformed_image, ann_data
 
     def _generate_training_targets(self, ann_data: AnnotationData) -> torch.Tensor:
-        """Generate heatmap targets for training."""
+        """Generate heatmap targets for training with improved sigma."""
         heatmaps = generate_target_heatmap(
             keypoints=ann_data.keypoints,
             heatmap_size=self.heatmap_size,
-            sigma=2.0
+            sigma=3.0  # Increased from 2.0 to 3.0 for better learning
         )
 
         # Ensure consistent 4D shape [num_persons, num_keypoints, H, W]
@@ -433,49 +433,82 @@ def efficient_collate_fn(batch: List[Dict]) -> Dict[str, Union[torch.Tensor, Lis
     """Memory-efficient collation ensuring correct output format."""
     try:
         # Get device from device manager to ensure consistency
-        device_manager = get_device_manager()
+        # Handle case where device manager is not initialized in worker processes
+        try:
+            device_manager = get_device_manager()
+            device = device_manager.device
+            use_device_manager = True
+        except RuntimeError:
+            # Fallback: use device from first tensor in batch
+            device = batch[0]["image"].device if batch else torch.device('cpu')
+            use_device_manager = False
 
         # Filter out samples with no valid persons for training efficiency
         valid_samples = [sample for sample in batch if sample["num_persons"] > 0]
 
         if not valid_samples:
-            # If no valid samples, return a dummy batch using device manager
-            return {
-                "image": torch.stack([device_manager.to_device(sample["image"]) for sample in batch]),
-                "heatmaps": device_manager.zeros(len(batch), 1, 17, 56, 56),
-                "visibilities": device_manager.zeros(len(batch), 1, 17),
-                "bboxes": [device_manager.zeros(len(batch), 1, 4)],
-                "num_persons": device_manager.zeros(len(batch), dtype=torch.long),
-                "img_path": [s["img_path"] for s in batch],
-                "orig_size": [s["orig_size"] for s in batch],
-                "keypoints": device_manager.zeros(len(batch), 1, 17, 2)
-            }
+            # If no valid samples, return a dummy batch
+            if use_device_manager:
+                return {
+                    "image": torch.stack([device_manager.to_device(sample["image"]) for sample in batch]),
+                    "heatmaps": device_manager.zeros(len(batch), 1, 17, 56, 56),
+                    "visibilities": device_manager.zeros(len(batch), 1, 17),
+                    "bboxes": [device_manager.zeros(len(batch), 1, 4)],
+                    "num_persons": device_manager.zeros(len(batch), dtype=torch.long),
+                    "img_path": [s["img_path"] for s in batch],
+                    "orig_size": [s["orig_size"] for s in batch],
+                    "keypoints": device_manager.zeros(len(batch), 1, 17, 2)
+                }
+            else:
+                return {
+                    "image": torch.stack([sample["image"].to(device) for sample in batch]),
+                    "heatmaps": torch.zeros(len(batch), 1, 17, 56, 56, device=device),
+                    "visibilities": torch.zeros(len(batch), 1, 17, device=device),
+                    "bboxes": [torch.zeros(len(batch), 1, 4, device=device)],
+                    "num_persons": torch.zeros(len(batch), device=device, dtype=torch.long),
+                    "img_path": [s["img_path"] for s in batch],
+                    "orig_size": [s["orig_size"] for s in batch],
+                    "keypoints": torch.zeros(len(batch), 1, 17, 2, device=device)
+                }
 
         # Move all images to the correct device and stack them
-        batch_images = torch.stack([device_manager.to_device(sample["image"]) for sample in valid_samples])
+        if use_device_manager:
+            batch_images = torch.stack([device_manager.to_device(sample["image"]) for sample in valid_samples])
+        else:
+            batch_images = torch.stack([sample["image"].to(device) for sample in valid_samples])
         batch_size = len(valid_samples)
 
         # Tìm max_persons cho mỗi batch
         max_persons = max(sample["num_persons"] for sample in valid_samples)
 
-        # Khởi tạo tensors using device manager
-        all_heatmaps = device_manager.zeros(batch_size, max_persons, 17, 56, 56)
-        all_visibilities = device_manager.zeros(batch_size, max_persons, 17)
-        all_bboxes = device_manager.zeros(batch_size, max_persons, 4)
-
-        # Thêm keypoints cho training
-        all_keypoints = device_manager.zeros(batch_size, max_persons, 17, 2)
+        # Khởi tạo tensors
+        if use_device_manager:
+            all_heatmaps = device_manager.zeros(batch_size, max_persons, 17, 56, 56)
+            all_visibilities = device_manager.zeros(batch_size, max_persons, 17)
+            all_bboxes = device_manager.zeros(batch_size, max_persons, 4)
+            all_keypoints = device_manager.zeros(batch_size, max_persons, 17, 2)
+        else:
+            all_heatmaps = torch.zeros(batch_size, max_persons, 17, 56, 56, device=device)
+            all_visibilities = torch.zeros(batch_size, max_persons, 17, device=device)
+            all_bboxes = torch.zeros(batch_size, max_persons, 4, device=device)
+            all_keypoints = torch.zeros(batch_size, max_persons, 17, 2, device=device)
 
         for batch_idx, sample in enumerate(valid_samples):
             num_persons = sample["num_persons"]
 
             if num_persons > 0:
                 # Process heatmaps - ensure they're on the correct device
-                heatmaps = device_manager.to_device(sample["heatmaps"])
+                if use_device_manager:
+                    heatmaps = device_manager.to_device(sample["heatmaps"])
+                else:
+                    heatmaps = sample["heatmaps"].to(device)
                 all_heatmaps[batch_idx, :num_persons] = heatmaps[:num_persons]
 
                 # Process visibilities - ensure they're on the correct device
-                visibilities = device_manager.to_device(sample["visibilities"])
+                if use_device_manager:
+                    visibilities = device_manager.to_device(sample["visibilities"])
+                else:
+                    visibilities = sample["visibilities"].to(device)
                 if visibilities.dim() == 3:  # [1, P, K]
                     vis = visibilities.squeeze(0)
                 else:
@@ -486,7 +519,10 @@ def efficient_collate_fn(batch: List[Dict]) -> Dict[str, Union[torch.Tensor, Lis
                 bboxes = sample["bboxes"]
                 if isinstance(bboxes, list):
                     bboxes = bboxes[0]  # Get first tensor
-                bboxes = device_manager.to_device(bboxes)
+                if use_device_manager:
+                    bboxes = device_manager.to_device(bboxes)
+                else:
+                    bboxes = bboxes.to(device)
                 if bboxes.dim() == 2:  # [P, 4]
                     all_bboxes[batch_idx, :num_persons] = bboxes[:num_persons]
                 elif bboxes.dim() == 3:  # [1, P, 4]
@@ -494,17 +530,26 @@ def efficient_collate_fn(batch: List[Dict]) -> Dict[str, Union[torch.Tensor, Lis
 
                 # Extract keypoints from heatmaps if available - ensure they're on the correct device
                 if "keypoints" in sample:
-                    kpts = device_manager.to_device(sample["keypoints"])
+                    if use_device_manager:
+                        kpts = device_manager.to_device(sample["keypoints"])
+                    else:
+                        kpts = sample["keypoints"].to(device)
                     if kpts.dim() == 4:  # [1, P, K, 2]
                         kpts = kpts.squeeze(0)
                     all_keypoints[batch_idx, :num_persons] = kpts[:num_persons]
+
+        # Create num_persons tensor
+        if use_device_manager:
+            num_persons_tensor = device_manager.create_tensor([s["num_persons"] for s in valid_samples])
+        else:
+            num_persons_tensor = torch.tensor([s["num_persons"] for s in valid_samples], device=device)
 
         return {
             "image": batch_images,
             "heatmaps": all_heatmaps,
             "visibilities": all_visibilities,
             "bboxes": [all_bboxes],  # Wrap trong list để phù hợp với model
-            "num_persons": device_manager.create_tensor([s["num_persons"] for s in valid_samples]),
+            "num_persons": num_persons_tensor,
             "img_path": [s["img_path"] for s in valid_samples],
             "orig_size": [s["orig_size"] for s in valid_samples],
             "keypoints": all_keypoints  # Thêm keypoints cho training
@@ -540,25 +585,33 @@ def create_optimized_dataloader(
         cache_size=cache_size
     )
 
-    # Get pin_memory setting from device manager if available
+    # Disable pin_memory when using DeviceManager to avoid conflicts
+    # DeviceManager handles device placement directly in collate_fn
     try:
         device_manager = get_device_manager()
-        pin_memory = device_manager.pin_memory
+        # Disable pin_memory when using DeviceManager
+        pin_memory = False
     except RuntimeError:
         # Fallback if device manager not initialized
         pin_memory = torch.cuda.is_available()
 
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=(split == "train"),
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=(split == "train"),
-        collate_fn=efficient_collate_fn,
-        persistent_workers=True if num_workers > 0 else False,
-        **({"prefetch_factor": 2} if num_workers > 0 else {})
-    )
+    # Configure DataLoader parameters based on num_workers
+    dataloader_kwargs = {
+        'dataset': dataset,
+        'batch_size': batch_size,
+        'shuffle': (split == "train"),
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+        'drop_last': (split == "train"),
+        'collate_fn': efficient_collate_fn,
+        'persistent_workers': True if num_workers > 0 else False,
+    }
+
+    # Only set prefetch_factor if num_workers > 0
+    if num_workers > 0:
+        dataloader_kwargs['prefetch_factor'] = 2
+
+    return DataLoader(**dataloader_kwargs)
 
 
 class AdaptiveBatchSampler:
@@ -645,10 +698,11 @@ def create_adaptive_dataloader(
         max_persons_per_batch=max_persons_per_batch
     )
 
-    # Get pin_memory setting from device manager if available
+    # Disable pin_memory when using DeviceManager to avoid conflicts
     try:
-        device_manager = get_device_manager()
-        pin_memory = device_manager.pin_memory
+        get_device_manager()
+        # Disable pin_memory when using DeviceManager
+        pin_memory = False
     except RuntimeError:
         # Fallback if device manager not initialized
         pin_memory = torch.cuda.is_available()

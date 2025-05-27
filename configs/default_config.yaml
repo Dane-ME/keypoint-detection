@@ -1,12 +1,12 @@
 paths:
-  default_config: 'D:/AI/Keypoint_model/keypoint-detection/configs/default_config.yaml'
-  data_dir: 'D:/AI/Keypoint_model/minidatasets'
-  output_dir: 'D:/AI/Keypoint_model/keypoint-detection/outputs'
+  default_config: 'C:/Users/pc/Desktop/project_root-20250322T120048Z-001/project_root/keypoint-detection/configs/default_config.yaml'
+  data_dir: 'C:/Users/pc/Desktop/project_root-20250322T120048Z-001/Datasets/Datasets'
+  output_dir: 'C:/Users/pc/Desktop/project_root-20250322T120048Z-001/project_root/keypoint-detection/outputs'
 
 # Device configuration - centralized device management
 device:
   # Device type: 'auto', 'cuda', 'cpu', or specific device like 'cuda:0'
-  type: 'cpu'  # auto will use cuda if available, otherwise cpu
+  type: 'auto'  # auto will use cuda if available, otherwise cpu
   # Force CPU even if CUDA is available (useful for debugging)
   force_cpu: false
   # Enable mixed precision training (only works with CUDA)
@@ -16,7 +16,7 @@ device:
 
 model:
   backbone:
-    width_mult: 1.0
+    width_mult: 1.5
     in_channels: 1
     out_channels: 128
     input_size: 224
@@ -51,19 +51,28 @@ model:
     deconv_channels: [256, 256]
 
 training:
-  num_epochs: 5  # Increase for better training
-  batch_size: 96   # Reduce for stability
+  num_epochs: 30  # Increase for better training
+  batch_size: 128   # Reduce for stability
   num_workers: 0  # Set to 0 to avoid multiprocessing issues with DeviceManager
   save_interval: 10
-  validation_interval: 1
-  early_stopping_patience: 6
+  validation_interval: 10
+  early_stopping_patience: 10
   gradient_clip_norm: 1.0
   pck_thresholds: [0.002, 0.05, 0.2]
 
+  # Learning rate scheduler configuration
+  lr_scheduler:
+    factor: 0.1        # Reduce LR by factor of 10
+    patience: 3        # Wait 3 epochs without improvement
+    min_lr: 1e-6       # Minimum learning rate
+    mode: 'min'        # Monitor decreasing metric (loss)
+    threshold: 0.0001  # Minimum improvement threshold
+    metric: 'loss'     # Which metric to monitor ('loss' or 'pck_0.2')
+
   optimizer:
     name: "adam" # hoặc "sgd"
-    learning_rate: 0.001
-    weight_decay: 0.003
+    learning_rate: 0.01
+    weight_decay: 0.001
     momentum: 0.9 # cho SGD
     beta1: 0.9 # cho Adam
     beta2: 0.999 # cho Adam

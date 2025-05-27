@@ -2,20 +2,18 @@
 Multi-person Keypoint Detection Model
 """
 
-import sys
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 from torchvision.ops import roi_align
 
-from dll.configs.model_config import ModelConfig, BackboneConfig, KeypointHeadConfig, HeatmapHeadConfig
-from dll.configs.training_config import TrainingConfig, OptimizerConfig
+from dll.configs.model_config import ModelConfig
+from dll.configs.training_config import TrainingConfig
 from dll.models.backbone import MobileNetV3Wrapper
 from dll.models.heatmap_head import HeatmapHead
 from dll.models.person_head import PERSON_HEAD
-from dll.models.keypoint_head import KEYPOINT_HEAD
-from dll.losses.keypoint_loss import KeypointLoss
+from dll.losses import KeypointLoss
 
 class ChannelAttention(nn.Module):
     def __init__(self, in_channels, reduction_ratio=16):

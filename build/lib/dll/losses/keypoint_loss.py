@@ -1,340 +1,393 @@
-import sys
-from typing import Optional
+"""
+Improved Keypoint Loss Architecture - Phase 1.1 Implementation
+
+This module addresses the critical loss scaling issue causing stagnant PCK metrics
+by implementing dynamic loss balancing and spatial-aware coordinate loss.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dll.configs.training_config import TrainingConfig
-from dll.utils.device_manager import get_device_manager
+from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+import logging
 
-class FocalLoss(nn.Module):
-    def __init__(self, gamma=2, alpha=None, learnable=False, num_classes=3, device=None):
-        super().__init__()
-        self.learnable = learnable
-        self.num_classes = num_classes
-        self.device = device or (torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+logger = logging.getLogger(__name__)
 
-        if learnable:
-            self.gamma = nn.Parameter(torch.tensor(gamma, dtype=torch.float32, device=self.device))
-            if alpha is not None:
-                alpha_tensor = torch.as_tensor(alpha, dtype=torch.float32, device=self.device)
-                if alpha_tensor.numel() == 1:
-                    alpha_tensor = alpha_tensor.expand(num_classes)
-                self.alpha = nn.Parameter(alpha_tensor)
+
+@dataclass
+class LossMetrics:
+    """Container for loss component metrics"""
+    total_loss: float
+    heatmap_loss: float
+    coordinate_loss: float
+    visibility_loss: float
+    loss_weights: Dict[str, float]
+
+
+class DynamicLossBalancer:
+    """
+    Dynamic loss balancing to prevent component dominance and ensure
+    all loss components contribute meaningfully to learning.
+    """
+
+    def __init__(self,
+                 initial_weights: Dict[str, float] = None,
+                 adaptation_rate: float = 0.1,
+                 min_weight: float = 0.1,
+                 max_weight: float = 10.0):
+        """
+        Initialize dynamic loss balancer.
+
+        Args:
+            initial_weights: Initial weights for loss components
+            adaptation_rate: Rate of weight adaptation (0.0 to 1.0)
+            min_weight: Minimum allowed weight
+            max_weight: Maximum allowed weight
+        """
+        self.adaptation_rate = adaptation_rate
+        self.min_weight = min_weight
+        self.max_weight = max_weight
+
+        # Initialize weights
+        self.weights = initial_weights or {
+            'heatmap': 1.0,
+            'coordinate': 1.0,
+            'visibility': 1.0
+        }
+
+        # Track loss history for adaptation
+        self.loss_history = {key: [] for key in self.weights.keys()}
+        self.update_count = 0
+
+    def update_weights(self, loss_components: Dict[str, float]) -> Dict[str, float]:
+        """
+        Update loss weights based on component magnitudes.
+
+        The goal is to balance loss components so they contribute roughly equally
+        to the total gradient magnitude.
+        """
+        self.update_count += 1
+
+        # Store current losses
+        for key, value in loss_components.items():
+            if key in self.loss_history:
+                self.loss_history[key].append(value)
+                # Keep only recent history
+                if len(self.loss_history[key]) > 100:
+                    self.loss_history[key] = self.loss_history[key][-100:]
+
+        # Adapt weights every 10 updates
+        if self.update_count % 10 == 0:
+            self._adapt_weights()
+
+        return self.weights.copy()
+
+    def _adapt_weights(self):
+        """Adapt weights based on loss component statistics"""
+        if len(self.loss_history['heatmap']) < 10:
+            return
+
+        # Calculate recent average losses
+        recent_losses = {}
+        for key in self.weights.keys():
+            if self.loss_history[key]:
+                recent_losses[key] = sum(self.loss_history[key][-10:]) / 10
             else:
-                self.alpha = None
-        else:
-            self.register_buffer('gamma', torch.tensor(gamma, dtype=torch.float32, device=self.device))
-            if alpha is not None:
-                alpha_tensor = torch.as_tensor(alpha, dtype=torch.float32, device=self.device)
-                if alpha_tensor.numel() == 1:
-                    alpha_tensor = alpha_tensor.expand(num_classes)
-                self.register_buffer('alpha', alpha_tensor)
-            else:
-                self.alpha = None
+                recent_losses[key] = 1.0
 
-    def forward(self, inputs, targets):
-        targets = targets.long()
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-        pt = torch.exp(-ce_loss)
-        gamma = self.gamma.clamp(min=0)
-        focal_weight = (1 - pt) ** gamma
+        # Find the component with median loss magnitude
+        loss_values = list(recent_losses.values())
+        loss_values.sort()
+        target_magnitude = loss_values[len(loss_values) // 2]
 
-        if self.alpha is not None:
-            clamped_alpha = self.alpha.clamp(0, 1)
-            alpha_t = clamped_alpha[targets]
-            focal_weight = focal_weight * alpha_t
+        # Adjust weights to balance components toward target magnitude
+        for key in self.weights.keys():
+            if recent_losses[key] > 0:
+                # If loss is too large, reduce weight; if too small, increase weight
+                ratio = target_magnitude / recent_losses[key]
+                adjustment = (ratio - 1.0) * self.adaptation_rate
 
-        loss = focal_weight * ce_loss
+                new_weight = self.weights[key] * (1.0 + adjustment)
+                self.weights[key] = max(self.min_weight, min(self.max_weight, new_weight))
 
-        return loss.mean()
+        logger.debug(f"Adapted loss weights: {self.weights}")
 
-    def extra_repr(self) -> str:
-        gamma_val = self.gamma.item() if isinstance(self.gamma, torch.Tensor) else self.gamma
-        if self.alpha is not None:
-            alpha_str = f", alpha={self.alpha.detach().cpu().numpy()}"
-        else:
-            alpha_str = ""
-        return f"gamma={gamma_val:.4f}{alpha_str}, learnable={self.learnable}"
 
-class HeatmapLoss(nn.Module):
-    def __init__(self, use_target_weight: bool = True):
+class SpatialCoordinateLoss(nn.Module):
+    """
+    Spatial-aware coordinate loss that properly weights pixel-space errors.
+
+    This addresses the issue where coordinate loss was too small compared to
+    other components, preventing effective keypoint localization learning.
+    """
+
+    def __init__(self,
+                 loss_type: str = 'smooth_l1',
+                 pixel_weight_scale: float = 100.0,
+                 distance_threshold: float = 5.0):
+        """
+        Initialize spatial coordinate loss.
+
+        Args:
+            loss_type: Type of loss ('smooth_l1', 'mse', 'huber')
+            pixel_weight_scale: Scale factor for pixel-space errors
+            distance_threshold: Threshold for distance-based weighting
+        """
         super().__init__()
-        self.use_target_weight = use_target_weight
-        self.criterion = nn.MSELoss(reduction='none')
+        self.loss_type = loss_type
+        self.pixel_weight_scale = pixel_weight_scale
+        self.distance_threshold = distance_threshold
 
-    def forward(self, pred_heatmaps: torch.Tensor,
+        if loss_type == 'smooth_l1':
+            self.criterion = nn.SmoothL1Loss(reduction='none')
+        elif loss_type == 'mse':
+            self.criterion = nn.MSELoss(reduction='none')
+        elif loss_type == 'huber':
+            self.criterion = nn.HuberLoss(reduction='none')
+        else:
+            raise ValueError(f"Unsupported loss type: {loss_type}")
+
+    def forward(self,
+                pred_coords: torch.Tensor,
+                gt_coords: torch.Tensor,
+                visibility: torch.Tensor,
+                image_size: Tuple[int, int] = (224, 224)) -> torch.Tensor:
+        """
+        Compute spatial coordinate loss.
+
+        Args:
+            pred_coords: Predicted coordinates (B, N, K, 2)
+            gt_coords: Ground truth coordinates (B, N, K, 2)
+            visibility: Visibility mask (B, N, K)
+            image_size: Image size for normalization
+
+        Returns:
+            Scalar loss value
+        """
+        # Only compute loss for visible keypoints
+        visible_mask = (visibility > 0).float()
+
+        if visible_mask.sum() == 0:
+            return torch.tensor(0.0, device=pred_coords.device, requires_grad=True)
+
+        # Compute coordinate differences
+        coord_diff = pred_coords - gt_coords
+
+        # Apply loss function
+        if self.loss_type == 'smooth_l1':
+            loss = self.criterion(pred_coords, gt_coords)
+        else:
+            loss = self.criterion(pred_coords, gt_coords)
+
+        # Sum over coordinate dimensions (x, y)
+        loss = loss.sum(dim=-1)  # (B, N, K)
+
+        # Apply visibility mask
+        loss = loss * visible_mask
+
+        # Distance-based weighting: give more weight to larger errors
+        distances = torch.norm(coord_diff, dim=-1)  # (B, N, K)
+        distance_weights = torch.clamp(distances / self.distance_threshold, min=1.0, max=3.0)
+        loss = loss * distance_weights
+
+        # Scale to pixel space magnitude
+        loss = loss * self.pixel_weight_scale
+
+        # Average over valid keypoints
+        valid_count = visible_mask.sum()
+        return loss.sum() / (valid_count + 1e-8)
+
+
+class AdaptiveHeatmapLoss(nn.Module):
+    """
+    Adaptive heatmap loss with region-specific weighting and improved
+    focus on keypoint regions vs background.
+    """
+
+    def __init__(self,
+                 keypoint_weight: float = 50.0,
+                 background_weight: float = 1.0,
+                 adaptive_threshold: bool = True,
+                 focal_alpha: float = 2.0):
+        """
+        Initialize adaptive heatmap loss.
+
+        Args:
+            keypoint_weight: Weight for keypoint regions
+            background_weight: Weight for background regions
+            adaptive_threshold: Whether to use adaptive thresholding
+            focal_alpha: Focal loss parameter for hard example mining
+        """
+        super().__init__()
+        self.keypoint_weight = keypoint_weight
+        self.background_weight = background_weight
+        self.adaptive_threshold = adaptive_threshold
+        self.focal_alpha = focal_alpha
+
+    def _compute_adaptive_threshold(self, gt_heatmaps: torch.Tensor) -> torch.Tensor:
+        """Compute adaptive threshold based on heatmap statistics"""
+        if not self.adaptive_threshold:
+            return torch.tensor(0.1, device=gt_heatmaps.device)
+
+        # Use percentile-based threshold
+        flattened = gt_heatmaps.flatten()
+        threshold = torch.quantile(flattened, 0.9)
+        return torch.clamp(threshold, min=0.05, max=0.3)
+
+    def forward(self,
+                pred_heatmaps: torch.Tensor,
                 gt_heatmaps: torch.Tensor,
                 target_weight: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
+        Compute adaptive heatmap loss.
+
         Args:
-            pred_heatmaps: (B, K, H, W)
-            gt_heatmaps: (B, K, H, W)
-            target_weight: (B, K) or None
+            pred_heatmaps: Predicted heatmaps (B, K, H, W)
+            gt_heatmaps: Ground truth heatmaps (B, K, H, W)
+            target_weight: Target weights (B, K)
+
         Returns:
-            Scalar loss
+            Scalar loss value
         """
-        if pred_heatmaps.shape != gt_heatmaps.shape:
-            raise ValueError(f"Shape mismatch: {pred_heatmaps.shape} vs {gt_heatmaps.shape}")
+        # Compute adaptive threshold
+        threshold = self._compute_adaptive_threshold(gt_heatmaps)
 
-        loss = self.criterion(pred_heatmaps, gt_heatmaps)
+        # Create region masks
+        keypoint_mask = (gt_heatmaps > threshold).float()
+        background_mask = (gt_heatmaps <= threshold).float()
 
-        if self.use_target_weight:
-            if target_weight is None:
-                raise ValueError("target_weight is required when use_target_weight is True")
-            weight = target_weight.view(loss.shape[0], loss.shape[1], 1, 1)
-            loss = loss * weight
+        # Compute base MSE loss
+        mse_loss = F.mse_loss(pred_heatmaps, gt_heatmaps, reduction='none')
 
-        return loss.mean()
+        # Apply region-specific weights
+        weighted_loss = (mse_loss * keypoint_mask * self.keypoint_weight +
+                        mse_loss * background_mask * self.background_weight)
 
-class KeypointLoss(nn.Module):
-    def __init__(self, num_keypoints: int, config: TrainingConfig, device: None):
+        # Apply focal weighting for hard examples
+        if self.focal_alpha > 0:
+            pt = torch.exp(-mse_loss)
+            focal_weight = (1 - pt) ** self.focal_alpha
+            weighted_loss = weighted_loss * focal_weight
+
+        # Apply target weights if provided
+        if target_weight is not None:
+            target_weight_expanded = target_weight.view(
+                weighted_loss.shape[0], weighted_loss.shape[1], 1, 1
+            )
+            weighted_loss = weighted_loss * target_weight_expanded
+
+        return weighted_loss.mean()
+
+
+class ImprovedKeypointLoss(nn.Module):
+    """
+    Improved keypoint loss with dynamic balancing and spatial awareness.
+
+    This addresses the critical issue of stagnant PCK metrics by ensuring
+    all loss components contribute meaningfully to learning.
+    """
+
+    def __init__(self,
+                 num_keypoints: int,
+                 config,
+                 device: Optional[torch.device] = None):
+        """Initialize improved keypoint loss"""
         super().__init__()
+
         self.num_keypoints = num_keypoints
-        self.config = config
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        # Use device manager if available, otherwise fallback to provided device
-        try:
-            device_manager = get_device_manager()
-            self.device = device_manager.device
-        except RuntimeError:
-            self.device = device or (torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        # Initialize loss components
+        self.heatmap_loss = AdaptiveHeatmapLoss()
+        self.coordinate_loss = SpatialCoordinateLoss()
+        self.visibility_loss = nn.CrossEntropyLoss()
 
-        # Use improved weighted heatmap loss with config parameters
-        # Handle both object and dict config formats
-        weighted_loss_enabled = False
-        weighted_loss_config = None
+        # Initialize dynamic loss balancer
+        initial_weights = {
+            'heatmap': getattr(config, 'lambda_keypoint', 1.0),
+            'coordinate': 5.0,  # Higher initial weight for coordinate loss
+            'visibility': getattr(config, 'lambda_visibility', 1.0)
+        }
+        self.loss_balancer = DynamicLossBalancer(initial_weights=initial_weights)
 
-        if hasattr(config.loss, 'weighted_loss'):
-            weighted_loss_config = config.loss.weighted_loss
-            # Check if it's an object with .enabled attribute
-            if hasattr(weighted_loss_config, 'enabled'):
-                weighted_loss_enabled = weighted_loss_config.enabled
-            # Check if it's a dict with 'enabled' key
-            elif isinstance(weighted_loss_config, dict) and 'enabled' in weighted_loss_config:
-                weighted_loss_enabled = weighted_loss_config['enabled']
-
-        if weighted_loss_enabled and weighted_loss_config:
-            # Extract parameters based on config type
-            if hasattr(weighted_loss_config, 'keypoint_weight'):
-                # Object format
-                keypoint_weight = weighted_loss_config.keypoint_weight
-                background_weight = weighted_loss_config.background_weight
-                threshold = weighted_loss_config.threshold
-            else:
-                # Dict format
-                keypoint_weight = weighted_loss_config.get('keypoint_weight', 15.0)
-                background_weight = weighted_loss_config.get('background_weight', 1.0)
-                threshold = weighted_loss_config.get('threshold', 0.1)
-
-            # Import WeightedHeatmapLoss if not already imported
-            try:
-                from dll.losses.keypoint_loss import WeightedHeatmapLoss
-            except ImportError:
-                # Define WeightedHeatmapLoss locally if import fails
-                class WeightedHeatmapLoss(nn.Module):
-                    def __init__(self, use_target_weight: bool = True, keypoint_weight: float = 10.0,
-                                 background_weight: float = 1.0, threshold: float = 0.1):
-                        super().__init__()
-                        self.use_target_weight = use_target_weight
-                        self.keypoint_weight = keypoint_weight
-                        self.background_weight = background_weight
-                        self.threshold = threshold
-                        self.criterion = nn.MSELoss(reduction='none')
-
-                    def forward(self, pred_heatmaps: torch.Tensor,
-                                gt_heatmaps: torch.Tensor,
-                                target_weight: Optional[torch.Tensor] = None) -> torch.Tensor:
-                        if pred_heatmaps.shape != gt_heatmaps.shape:
-                            raise ValueError(f"Shape mismatch: {pred_heatmaps.shape} vs {gt_heatmaps.shape}")
-
-                        # Compute MSE loss
-                        loss = self.criterion(pred_heatmaps, gt_heatmaps)
-
-                        # Create weight map: higher weight for keypoint regions
-                        keypoint_mask = (gt_heatmaps > self.threshold).float()
-                        background_mask = (gt_heatmaps <= self.threshold).float()
-
-                        weight_map = (keypoint_mask * self.keypoint_weight +
-                                     background_mask * self.background_weight)
-
-                        # Apply weight map
-                        loss = loss * weight_map
-
-                        # Apply target weight if provided
-                        if self.use_target_weight and target_weight is not None:
-                            target_weight_expanded = target_weight.view(loss.shape[0], loss.shape[1], 1, 1)
-                            loss = loss * target_weight_expanded
-
-                        return loss.mean()
-
-            self.heatmap_criterion = WeightedHeatmapLoss(
-                use_target_weight=True,
-                keypoint_weight=keypoint_weight,
-                background_weight=background_weight,
-                threshold=threshold
-            ).to(self.device)
-        else:
-            # Fallback to regular heatmap loss
-            self.heatmap_criterion = HeatmapLoss(use_target_weight=True).to(self.device)
-
-        self.keypoint_weights = self._init_keypoint_weights(num_keypoints).to(self.device)
-
-        # Add visibility_criterion for compatibility with Trainer
-        self.visibility_criterion = FocalLoss(
-            gamma=config.loss.focal_gamma,
-            alpha=config.loss.focal_alpha,
-            learnable=config.loss.learnable_focal_params,
-            num_classes=3,  # 0: not visible, 1: occluded, 2: visible
-            device=self.device
-        ).to(self.device)
-
-        # Add coordinate loss criterion
-        self.coordinate_criterion = nn.SmoothL1Loss(reduction='none')
-
-    def forward(self, predictions : dict, targets : dict):
+    def forward(self, predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
+        Compute improved keypoint loss with dynamic balancing.
+
         Args:
-            predictions: Dictionary containing:
-                - heatmaps: (B, K, H, W) Predicted heatmaps
-                - visibilities: (B, K, 3) or (B, P, K, 3) Predicted visibility probabilities
-            targets: Dictionary containing:
-                - heatmaps: (B, K, H, W) Ground truth heatmaps
-                - visibility: (B, K) or (B, P, K) Visibility flags (0: not visible, 1: occluded, 2: visible)
+            predictions: Model outputs containing predictions
+            targets: Batch data containing ground truth
+
         Returns:
-            total_loss: Combined loss value
-            loss_dict: Dictionary containing individual loss components
+            Tuple of (total_loss, loss_dict) where:
+            - total_loss: Combined weighted loss value
+            - loss_dict: Dictionary containing individual loss components
         """
-        pred_heatmaps = predictions['heatmaps']
-        gt_heatmaps = targets['heatmaps']
+        # Extract predictions and ground truth
+        pred_heatmaps = predictions.get('heatmaps')
+        pred_coords = predictions.get('keypoints')
+        pred_visibility = predictions.get('visibility', predictions.get('visibilities'))
 
-        if pred_heatmaps.shape != gt_heatmaps.shape:
-            raise ValueError(f"Shape mismatch: predictions {pred_heatmaps.shape} vs targets {gt_heatmaps.shape}")
+        gt_heatmaps = targets.get('heatmaps')
+        gt_coords = targets.get('keypoints')
+        gt_visibility = targets.get('visibilities', targets.get('visibility'))
+        target_weight = targets.get('target_weight')
 
-        batch_size = pred_heatmaps.size(0)
+        # Compute individual loss components
+        loss_components = {}
 
-        # Compute heatmap loss
-        if 'visibility' in targets:
-            visibility = targets['visibility']
-            if visibility.dim() == 3:  # [B, P, K]
-                visibility = visibility.max(dim=1)[0]  # shape: (B, K)
-            # Convert 3-class visibility to binary weights (visible if class 1 or 2)
-            binary_visibility = (visibility > 0).float()
-            weights = (self.keypoint_weights.view(1, -1) * binary_visibility)   # shape (B, K)
+        # Heatmap loss
+        if pred_heatmaps is not None and gt_heatmaps is not None:
+            loss_components['heatmap'] = self.heatmap_loss(pred_heatmaps, gt_heatmaps, target_weight)
         else:
-            weights = self.keypoint_weights.view(1, -1).expand(batch_size, -1)
+            loss_components['heatmap'] = torch.tensor(0.0, device=self.device)
 
-        # Compute heatmap loss
-        heatmap_loss = self.heatmap_criterion(pred_heatmaps, gt_heatmaps, weights)
+        # Coordinate loss
+        if pred_coords is not None and gt_coords is not None and gt_visibility is not None:
+            loss_components['coordinate'] = self.coordinate_loss(
+                pred_coords, gt_coords, gt_visibility
+            )
+        else:
+            loss_components['coordinate'] = torch.tensor(0.0, device=self.device)
 
-        # Compute visibility loss if visibility predictions are available
-        visibility_loss = torch.tensor(0.0, device=self.device)
-        if 'visibilities' in predictions and 'visibility' in targets:
-            try:
-                pred_vis = predictions['visibilities']
-                target_vis = targets['visibility']
+        # Visibility loss
+        if pred_visibility is not None and gt_visibility is not None:
+            # Reshape for cross entropy
+            pred_vis_flat = pred_visibility.view(-1, pred_visibility.size(-1))
+            gt_vis_flat = gt_visibility.view(-1).long()
+            loss_components['visibility'] = self.visibility_loss(pred_vis_flat, gt_vis_flat)
+        else:
+            loss_components['visibility'] = torch.tensor(0.0, device=self.device)
 
-                # Ensure tensors are on the same device
-                pred_vis = pred_vis.to(self.device)
-                target_vis = target_vis.to(self.device)
+        # Get current loss values for balancing
+        current_losses = {k: v.item() for k, v in loss_components.items()}
 
-                # Handle different dimensions
-                if pred_vis.dim() == 4:  # [B, P, K, 3]
-                    pred_vis = pred_vis.view(-1, pred_vis.size(-1))  # [B*P*K, 3]
-                elif pred_vis.dim() == 3:  # [B, K, 3] or [B, P, K]
-                    if pred_vis.size(-1) == 3:
-                        pred_vis = pred_vis.view(-1, 3)  # [B*K, 3]
-                    else:  # [B, P, K]
-                        pred_vis = pred_vis.view(-1)  # [B*P*K]
+        # Update dynamic weights
+        weights = self.loss_balancer.update_weights(current_losses)
 
-                if target_vis.dim() == 3:  # [B, P, K]
-                    target_vis = target_vis.view(-1)  # [B*P*K]
-                elif target_vis.dim() == 2:  # [B, K]
-                    target_vis = target_vis.view(-1)  # [B*K]
+        # Compute weighted total loss
+        total_loss = sum(weights[k] * loss_components[k] for k in loss_components.keys())
 
-                # Ensure target_vis is long type for cross entropy
-                target_vis = target_vis.long().clamp(0, 2)
-
-                if pred_vis.size(0) == target_vis.size(0):
-                    visibility_loss = self.visibility_criterion(pred_vis, target_vis)
-
-            except Exception as e:
-                print(f"Warning: Could not compute visibility loss: {e}")
-                visibility_loss = torch.tensor(0.0, device=self.device)
-
-        # Compute coordinate loss if coordinate predictions are available
-        coordinate_loss = torch.tensor(0.0, device=self.device)
-        if 'coordinates' in predictions and 'keypoints' in targets:
-            try:
-                pred_coords = predictions['coordinates']
-                target_coords = targets['keypoints']
-
-                # Ensure tensors are on the same device
-                pred_coords = pred_coords.to(self.device)
-                target_coords = target_coords.to(self.device)
-
-                # Handle different dimensions and extract x,y coordinates
-                if target_coords.dim() == 4:  # [B, P, K, 2]
-                    target_coords = target_coords.view(-1, 2)  # [B*P*K, 2]
-                elif target_coords.dim() == 3:  # [B, K, 2]
-                    target_coords = target_coords.view(-1, 2)  # [B*K, 2]
-
-                if pred_coords.dim() == 4:  # [B, P, K, 2]
-                    pred_coords = pred_coords.view(-1, 2)  # [B*P*K, 2]
-                elif pred_coords.dim() == 3:  # [B, K, 2]
-                    pred_coords = pred_coords.view(-1, 2)  # [B*K, 2]
-
-                if pred_coords.size(0) == target_coords.size(0):
-                    # Only compute loss for visible keypoints
-                    if 'visibility' in targets:
-                        vis_mask = targets['visibility'].to(self.device)
-                        if vis_mask.dim() == 3:  # [B, P, K]
-                            vis_mask = vis_mask.view(-1)  # [B*P*K]
-                        elif vis_mask.dim() == 2:  # [B, K]
-                            vis_mask = vis_mask.view(-1)  # [B*K]
-
-                        # Only compute loss for visible keypoints (visibility > 0)
-                        visible_mask = (vis_mask > 0).float()
-                        if visible_mask.sum() > 0:
-                            coord_loss = self.coordinate_criterion(pred_coords, target_coords)
-                            coord_loss = coord_loss.mean(dim=1)  # Average over x,y
-                            coordinate_loss = (coord_loss * visible_mask).sum() / visible_mask.sum()
-                    else:
-                        coordinate_loss = self.coordinate_criterion(pred_coords, target_coords).mean()
-
-            except Exception as e:
-                print(f"Warning: Could not compute coordinate loss: {e}")
-                coordinate_loss = torch.tensor(0.0, device=self.device)
-
-        # Combine losses with weights from config
-        total_loss = (
-            self.config.lambda_keypoint * heatmap_loss +
-            self.config.lambda_visibility * visibility_loss +
-            0.05 * coordinate_loss  # Weight coordinate loss
-        )
-
-        # Return both total loss and loss components
+        # Create loss dictionary for monitoring (matching original interface)
         loss_dict = {
-            'heatmap_loss': heatmap_loss.item(),
-            'visibility_loss': visibility_loss.item(),
-            'coordinate_loss': coordinate_loss.item(),
-            'total_loss': total_loss.item()
+            'keypoint_loss': loss_components['heatmap'].item(),  # For backward compatibility
+            'heatmap_loss': loss_components['heatmap'].item(),
+            'visibility_loss': loss_components['visibility'].item(),
+            'coordinate_loss': loss_components['coordinate'].item(),
+            'total_loss': total_loss.item(),
+            'loss_weights': weights,
+            'loss_metrics': LossMetrics(
+                total_loss=total_loss.item(),
+                heatmap_loss=loss_components['heatmap'].item(),
+                coordinate_loss=loss_components['coordinate'].item(),
+                visibility_loss=loss_components['visibility'].item(),
+                loss_weights=weights
+            )
         }
 
         return total_loss, loss_dict
 
-    def _init_keypoint_weights(self, num_keypoints):
-        """Initialize keypoint importance weights with specific emphasis on key joints"""
-        weights = torch.ones(num_keypoints)
-        # Weights for specific keypoints based on their importance
-        special_weights = {
-            0: 1.5,  # nose - important for face orientation
-            1: 1.5,  # neck - central body reference
-            8: 1.2,  # left hip - important for pose
-            9: 1.2,  # right hip - important for pose
-            15: 1.3, # left ankle - important for stance
-            16: 1.3  # right ankle - important for stance
-        }
-        for idx, weight in special_weights.items():
-            if idx < num_keypoints:
-                weights[idx] = weight
-        return weights
+
+# Alias for backward compatibility
+KeypointLoss = ImprovedKeypointLoss

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from .base_config import DeviceConfig
 from .model_config import ModelConfig, BackboneConfig, HeatmapHeadConfig, KeypointHeadConfig, PersonDetectionConfig
-from .training_config import TrainingConfig, OptimizerConfig, AugmentationConfig, LossConfig, WeightedLossConfig
+from .training_config import TrainingConfig, OptimizerConfig, AugmentationConfig, LossConfig, WeightedLossConfig, LRSchedulerConfig
 
 @dataclass
 class PathsConfig:
@@ -164,6 +164,17 @@ def load_config(config_path: str) -> Config:
         weighted_loss=weighted_loss
     )
 
+    # LR Scheduler config
+    lr_scheduler_data = training_data.get('lr_scheduler', {})
+    lr_scheduler = LRSchedulerConfig(
+        factor=lr_scheduler_data.get('factor', 0.1),
+        patience=lr_scheduler_data.get('patience', 3),
+        min_lr=lr_scheduler_data.get('min_lr', 1e-6),
+        mode=lr_scheduler_data.get('mode', 'min'),
+        threshold=lr_scheduler_data.get('threshold', 0.0001),
+        metric=lr_scheduler_data.get('metric', 'loss')
+    )
+
     training = TrainingConfig(
         num_epochs=training_data.get('num_epochs', 50),
         batch_size=training_data.get('batch_size', 32),
@@ -171,6 +182,7 @@ def load_config(config_path: str) -> Config:
         optimizer=optimizer,
         augmentation=augmentation,
         loss=loss,
+        lr_scheduler=lr_scheduler,
         device=device,
         checkpoint_interval=training_data.get('checkpoint_interval', 5),
         validation_interval=training_data.get('validation_interval', 1),

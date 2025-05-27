@@ -1,8 +1,0 @@
-python scripts/train.py --config configs/default_config.yaml --data_dir "D:/AI/Keypoint_model/minidatasets" --output_dir outputs
-
-python scripts/predict.py --config configs/default_config.yaml --model outputs/best_model.pth --input "000000573065.jpg" --gt "000000573065.txt" --output outputs/predictions
-
-
-// Visualize Backbone Outputs
-python -m dll.visualization.backbone_vis --image 000000581921.jpg --save_dir outputs/visualizations
-python -m dll.visualization.backbone_vis --image 000000581921.jpg --label 000000581921.txt --bbox_idx 0 --save_dir outputs/visualizations --

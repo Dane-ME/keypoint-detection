@@ -8,6 +8,7 @@ dll.egg-info/requires.txt
 dll.egg-info/top_level.txt
 dll/configs/__init__.py
 dll/configs/base_config.py
+dll/configs/config_loader.py
 dll/configs/dataset_config.py
 dll/configs/model_config.py
 dll/configs/training_config.py
@@ -17,7 +18,6 @@ dll/data/dataloader.py
 dll/data/transforms.py
 dll/losses/__init__.py
 dll/losses/keypoint_loss.py
-dll/losses/keypoint_loss_v2.py
 dll/models/__init__.py
 dll/models/backbone.py
 dll/models/heatmap_head.py

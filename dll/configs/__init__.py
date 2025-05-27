@@ -10,7 +10,8 @@ from .training_config import (
     TrainingConfig,
     OptimizerConfig,
     AugmentationConfig,
-    LossConfig
+    LossConfig,
+    LRSchedulerConfig
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     'TrainingConfig',
     'OptimizerConfig',
     'AugmentationConfig',
-    'LossConfig'
+    'LossConfig',
+    'LRSchedulerConfig'
 ]
