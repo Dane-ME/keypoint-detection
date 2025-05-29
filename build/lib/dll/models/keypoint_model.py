@@ -2,20 +2,18 @@
 Multi-person Keypoint Detection Model
 """
 
-import sys
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 from torchvision.ops import roi_align
 
-from dll.configs.model_config import ModelConfig, BackboneConfig, KeypointHeadConfig, HeatmapHeadConfig
-from dll.configs.training_config import TrainingConfig, OptimizerConfig
+from dll.configs.model_config import ModelConfig
+from dll.configs.training_config import TrainingConfig
 from dll.models.backbone import MobileNetV3Wrapper
 from dll.models.heatmap_head import HeatmapHead
 from dll.models.person_head import PERSON_HEAD
-from dll.models.keypoint_head import KEYPOINT_HEAD
-from dll.losses.keypoint_loss import KeypointLoss
+from dll.losses import KeypointLoss
 
 class ChannelAttention(nn.Module):
     def __init__(self, in_channels, reduction_ratio=16):
@@ -545,6 +543,11 @@ class MultiPersonKeypointModel(nn.Module):
 
         # Prepare visibilities for loss computation
         pred_vis = outputs['visibilities']
+
+        # Handle different visibility prediction shapes
+        if pred_vis.dim() == 5:  # [B, P, 1, K, 3] - extra dimension
+            pred_vis = pred_vis.clone().squeeze(2)  # Clone before squeeze to avoid memory sharing -> [B, P, K, 3]
+
         if pred_vis.dim() == 4:  # [B, P, K, 3]
             # Aggregate across persons (max for visibility classes)
             pred_vis = torch.max(pred_vis, dim=1)[0]  # [B, K, 3]
@@ -559,12 +562,17 @@ class MultiPersonKeypointModel(nn.Module):
             # Aggregate across persons (max for visibility)
             gt_vis = torch.max(gt_vis, dim=1)[0]  # [B, K]
 
+        # Prepare keypoints for loss computation
+        pred_kpts = outputs['keypoints']
+        if pred_kpts.dim() == 5:  # [B, P, 1, K, 2] - extra dimension
+            pred_kpts = pred_kpts.clone().squeeze(2)  # Clone before squeeze to avoid memory sharing -> [B, P, K, 2]
+
         # Compute loss
         heatmap_loss, loss_dict = self.loss_fn(
             predictions={
                 'heatmaps': pred_heatmaps,
                 'visibilities': pred_vis,
-                'keypoints': outputs['keypoints']  # Add keypoints for coordinate loss
+                'keypoints': pred_kpts  # Add keypoints for coordinate loss
             },
             targets={
                 'heatmaps': heatmaps_gt,

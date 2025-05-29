@@ -1,4 +1,3 @@
-#from .keypoint_loss import KeypointLoss
-from .keypoint_loss_v2 import KeypointLoss
+from .keypoint_loss import KeypointLoss, ImprovedKeypointLoss
 
-__all__ = ['KeypointLoss']
+__all__ = ['KeypointLoss', 'ImprovedKeypointLoss']

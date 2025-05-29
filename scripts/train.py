@@ -15,8 +15,10 @@ from dll.configs import (
     OptimizerConfig,
     AugmentationConfig,
     LossConfig,
+    LRSchedulerConfig,
     DeviceConfig
 )
+from dll.configs.config_loader import load_config as load_yaml_config
 from dll.training import Trainer
 from dll.models import MultiPersonKeypointModel
 from dll.data import create_optimized_dataloader, OptimizedKeypointsDataset
@@ -83,14 +85,16 @@ def create_configs(config_dict):
     )
     return model_config, training_config
 def train_pipeline(args):
-    config_dict = load_config(args.config)
+    # Use the new config loader
+    config = load_yaml_config(args.config)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(output_dir)
     logger = logging.getLogger()
     logging.info("=== Starting Training Pipeline ===")
 
-    model_config, training_config = create_configs(config_dict)
+    model_config = config.model
+    training_config = config.training
 
     # Initialize device manager with config
     initialize_device_manager(training_config.device)

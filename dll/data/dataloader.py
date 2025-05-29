@@ -122,7 +122,7 @@ class OptimizedKeypointsDataset(Dataset):
         self._image_cache = LRUCache(maxsize=cache_size) if enable_caching else None
 
         # Initialize transforms
-        self.transform = transform or ITransform(img_size=img_size, clip_limit=1.5, tile_size=(8, 8))
+        self.transform = transform or ITransform(img_size=img_size, clip_limit=1.5, tile_size=(8, 8), grayscale=grayscale)
         self.augmentation = augmentation if split == "train" else None
 
         # Validate and load dataset

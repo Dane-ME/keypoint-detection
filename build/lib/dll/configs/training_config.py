@@ -43,6 +43,35 @@ class AugmentationConfig(BaseConfig):
         assert 0 <= self.prob <= 1, "prob must be between 0 and 1"
 
 @dataclass
+class WeightedLossConfig(BaseConfig):
+    enabled: bool = True
+    keypoint_weight: float = 15.0
+    background_weight: float = 1.0
+    threshold: float = 0.1
+
+    def validate(self):
+        assert self.keypoint_weight >= 0, "keypoint_weight must be non-negative"
+        assert self.background_weight >= 0, "background_weight must be non-negative"
+        assert 0 <= self.threshold <= 1, "threshold must be between 0 and 1"
+
+@dataclass
+class LRSchedulerConfig(BaseConfig):
+    factor: float = 0.1
+    patience: int = 3
+    min_lr: float = 1e-6
+    mode: str = 'min'
+    threshold: float = 0.0001
+    metric: str = 'loss'  # 'loss' or 'pck_0.2'
+
+    def validate(self):
+        assert 0 < self.factor < 1, "factor must be between 0 and 1"
+        assert self.patience >= 0, "patience must be non-negative"
+        assert self.min_lr > 0, "min_lr must be positive"
+        assert self.mode in ['min', 'max'], "mode must be 'min' or 'max'"
+        assert self.threshold >= 0, "threshold must be non-negative"
+        assert self.metric in ['loss', 'pck_0.2'], "metric must be 'loss' or 'pck_0.2'"
+
+@dataclass
 class LossConfig(BaseConfig):
     keypoint_loss_weight: float = 1.0
     visibility_loss_weight: float = 1.0
@@ -50,6 +79,7 @@ class LossConfig(BaseConfig):
     focal_alpha: Optional[float] = None
     learnable_focal_params: bool = False
     label_smoothing: float = 0.05
+    weighted_loss: WeightedLossConfig = field(default_factory=WeightedLossConfig)
 
     def validate(self):
         assert self.keypoint_loss_weight >= 0, "keypoint_loss_weight must be non-negative"
@@ -58,6 +88,7 @@ class LossConfig(BaseConfig):
         if self.focal_alpha is not None:
             assert 0 <= self.focal_alpha <= 1, "focal_alpha must be between 0 and 1"
         assert 0 <= self.label_smoothing <= 1, "label_smoothing must be between 0 and 1"
+        self.weighted_loss.validate()
 
 @dataclass
 class TrainingConfig(BaseConfig):
@@ -67,14 +98,15 @@ class TrainingConfig(BaseConfig):
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     loss: LossConfig = field(default_factory=LossConfig)
+    lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
     device: DeviceConfig = field(default_factory=DeviceConfig)
     checkpoint_interval: int = 5
     validation_interval: int = 1
 
-    # Learning rate scheduler parameters
-    lr_factor: float = 0.1  # Factor to reduce learning rate
-    patience: int = 3  # Number of epochs with no improvement after which learning rate will be reduced
-    min_lr: float = 1e-6  # Minimum learning rate
+    # Legacy parameters for backward compatibility (deprecated)
+    lr_factor: float = 0.1  # Use lr_scheduler.factor instead
+    patience: int = 3  # Use lr_scheduler.patience instead
+    min_lr: float = 1e-6  # Use lr_scheduler.min_lr instead
 
     # Loss weights
     lambda_keypoint: float = 15.0
@@ -89,6 +121,7 @@ class TrainingConfig(BaseConfig):
         assert self.num_epochs > 0, "num_epochs must be positive"
         assert self.batch_size > 0, "batch_size must be positive"
         assert self.num_workers >= 0, "num_workers must be non-negative"
+        # Legacy parameter validation for backward compatibility
         assert self.lr_factor > 0 and self.lr_factor < 1, "lr_factor must be between 0 and 1"
         assert self.patience >= 0, "patience must be non-negative"
         assert self.min_lr > 0, "min_lr must be positive"
@@ -97,3 +130,4 @@ class TrainingConfig(BaseConfig):
         self.optimizer.validate()
         self.augmentation.validate()
         self.loss.validate()
+        self.lr_scheduler.validate()
