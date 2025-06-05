@@ -1,0 +1,9 @@
+torch
+pyyaml
+tqdm
+pillow
+numpy
+torchvision
+opencv-python
+torchaudio
+scipy
